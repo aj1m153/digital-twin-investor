@@ -1,4 +1,4 @@
-name: Daily strategy run
+name: Daily strategy run v2
 
 on:
   schedule:
