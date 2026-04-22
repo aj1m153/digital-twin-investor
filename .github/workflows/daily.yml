@@ -1,0 +1,43 @@
+name: Daily strategy run
+
+on:
+  schedule:
+    # 14:00 UTC = 10:00 AM ET (during EDT) / 9:00 AM ET (during EST)
+    # 30 minutes after US market open. Adjust if you want pre-open only.
+    - cron: "0 14 * * 1-5"    # Weekdays only for stocks
+    - cron: "0 14 * * 0,6"    # Weekends for crypto-only portfolios
+  workflow_dispatch: {}        # allow manual runs from the Actions tab
+
+permissions:
+  contents: write              # needed to commit the updated SQLite file
+
+jobs:
+  run:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+          cache: "pip"
+
+      - run: pip install -r requirements.txt
+
+      - name: Run daily worker
+        env:
+          DATABASE_PATH: data/app.db
+          SMTP_HOST: ${{ secrets.SMTP_HOST }}
+          SMTP_PORT: ${{ secrets.SMTP_PORT }}
+          SMTP_USER: ${{ secrets.SMTP_USER }}
+          SMTP_PASSWORD: ${{ secrets.SMTP_PASSWORD }}
+          SMTP_FROM: ${{ secrets.SMTP_FROM }}
+        run: python daily_worker.py
+
+      - name: Persist DB changes
+        run: |
+          git config user.name "daily-worker-bot"
+          git config user.email "worker@users.noreply.github.com"
+          git add data/app.db
+          git diff --cached --quiet || git commit -m "daily run $(date -u +%Y-%m-%d)"
+          git push

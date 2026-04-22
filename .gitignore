@@ -1,0 +1,9 @@
+__pycache__/
+*.pyc
+*.pyo
+.venv/
+venv/
+.env
+.DS_Store
+# We DO want data/app.db committed in the GitHub Actions workflow model,
+# so it is NOT in .gitignore. If you switch to a hosted DB, add it here.
