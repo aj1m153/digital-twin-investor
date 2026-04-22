@@ -17,6 +17,7 @@ import os
 import smtplib
 from email.mime.multipart import MIMEMultipart
 from email.mime.text import MIMEText
+from email.header import Header
 from datetime import datetime
 
 
@@ -32,12 +33,12 @@ def send_email(to_email: str, subject: str, html_body: str, text_body: str = "")
         return
 
     msg = MIMEMultipart("alternative")
-    msg["Subject"] = subject
+    msg["Subject"] = Header(subject, "utf-8"
     msg["From"] = from_addr
     msg["To"] = to_email
     if text_body:
-        msg.attach(MIMEText(text_body, "plain"))
-    msg.attach(MIMEText(html_body, "html"))
+        msg.attach(MIMEText(text_body, "plain", "utf-8"))
+    msg.attach(MIMEText(html_body, "html", "utf-8"))
 
     with smtplib.SMTP(host, port) as server:
         server.starttls()
