@@ -16,6 +16,11 @@ from email.message import EmailMessage
 from email import policy
 
 
+print("USER:", repr(user))
+print("PASS:", repr(password))
+print("TO:", repr(to_email))
+print("SUBJECT:", repr(subject))
+
 # ---------- CLEANING ----------
 
 def clean_smtp(value: str | None) -> str | None:
