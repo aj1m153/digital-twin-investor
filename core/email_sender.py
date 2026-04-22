@@ -1,37 +1,40 @@
 """
 SMTP-based email sender with an HTML digest template.
 
-Uses the modern email.message.EmailMessage API, which handles UTF-8 headers
-and bodies correctly without manual encoding. Works for any subject line
-containing emoji, non-breaking spaces, accented characters, etc.
-
-Configure via env vars:
-    SMTP_HOST (default smtp.gmail.com)
-    SMTP_PORT (default 587)
-    SMTP_USER
-    SMTP_PASSWORD   (Gmail app password, NOT your Google account password)
-    SMTP_FROM       (defaults to SMTP_USER)
+Defensive against the Gmail app-password trap: Google's UI sometimes inserts
+non-breaking spaces (\\xa0) between the 4-char groups of the app password.
+We strip all whitespace (including Unicode non-breaking spaces) from
+credentials before feeding them to smtplib, which requires ASCII.
 """
 from __future__ import annotations
 
 import os
+import re
 import smtplib
 from datetime import datetime
 from email.message import EmailMessage
 
 
+def _clean(value: str | None) -> str | None:
+    """Strip ALL whitespace including unicode non-breaking spaces."""
+    if value is None:
+        return None
+    return re.sub(r"\s+", "", value, flags=re.UNICODE)
+
+
 def send_email(to_email: str, subject: str, html_body: str, text_body: str = "") -> None:
-    host = os.environ.get("SMTP_HOST", "smtp.gmail.com")
-    port = int(os.environ.get("SMTP_PORT", 587))
-    user = os.environ.get("SMTP_USER")
-    password = os.environ.get("SMTP_PASSWORD")
-    from_addr = os.environ.get("SMTP_FROM", user)
+    host = _clean(os.environ.get("SMTP_HOST", "smtp.gmail.com"))
+    port_raw = _clean(os.environ.get("SMTP_PORT", "587"))
+    port = int(port_raw) if port_raw else 587
+    user = _clean(os.environ.get("SMTP_USER"))
+    password = _clean(os.environ.get("SMTP_PASSWORD"))
+    from_addr = _clean(os.environ.get("SMTP_FROM")) or user
+    to_email = _clean(to_email)
 
     if not user or not password:
         print(f"[email_sender] SMTP not configured. Skipping email to {to_email}.")
         return
 
-    # EmailMessage handles UTF-8 encoding for both headers and bodies natively.
     msg = EmailMessage()
     msg["Subject"] = subject
     msg["From"] = from_addr
