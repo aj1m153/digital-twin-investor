@@ -1,11 +1,10 @@
 """
 SMTP-based email sender with an HTML digest template.
 
-Defensive against the Gmail app-password trap: Google's UI sometimes inserts
-non-breaking spaces (\\xa0) between the 4-char groups of the app password.
-We strip all whitespace (including Unicode non-breaking spaces) from
-credentials before feeding them to smtplib, which requires ASCII.
+Handles Gmail app-password quirks by stripping all whitespace
+(including Unicode non-breaking spaces) before authentication.
 """
+
 from __future__ import annotations
 
 import os
@@ -13,9 +12,10 @@ import re
 import smtplib
 from datetime import datetime
 from email.message import EmailMessage
+from typing import Optional
 
 
-def _clean(value: str | None) -> str | None:
+def _clean(value: Optional[str]) -> Optional[str]:
     """Strip ALL whitespace including unicode non-breaking spaces."""
     if value is None:
         return None
@@ -26,6 +26,7 @@ def send_email(to_email: str, subject: str, html_body: str, text_body: str = "")
     host = _clean(os.environ.get("SMTP_HOST", "smtp.gmail.com"))
     port_raw = _clean(os.environ.get("SMTP_PORT", "587"))
     port = int(port_raw) if port_raw else 587
+
     user = _clean(os.environ.get("SMTP_USER"))
     password = _clean(os.environ.get("SMTP_PASSWORD"))
     from_addr = _clean(os.environ.get("SMTP_FROM")) or user
@@ -35,21 +36,29 @@ def send_email(to_email: str, subject: str, html_body: str, text_body: str = "")
         print(f"[email_sender] SMTP not configured. Skipping email to {to_email}.")
         return
 
+    if not from_addr or not to_email:
+        raise ValueError("Invalid email address provided.")
+
     msg = EmailMessage()
     msg["Subject"] = subject
     msg["From"] = from_addr
     msg["To"] = to_email
+
     msg.set_content(text_body or "View this email in an HTML-capable client.")
     msg.add_alternative(html_body, subtype="html")
 
-    with smtplib.SMTP(host, port) as server:
-        server.starttls()
-        server.login(user, password)
-        server.send_message(msg)
+    try:
+        with smtplib.SMTP(host, port) as server:
+            server.ehlo()
+            server.starttls()
+            server.ehlo()
+            server.login(user, password)
+            server.send_message(msg)
+    except Exception as e:
+        print(f"[email_sender] Failed to send email: {e}")
 
 
 def render_daily_email(
-    user_email: str,
     portfolio: dict,
     total_value: float,
     day_pnl: float,
@@ -59,105 +68,124 @@ def render_daily_email(
     positions: list[dict],
     strategy_display: str,
 ) -> tuple[str, str]:
-    """Return (subject, html_body) for the morning digest email."""
+    """Return (subject, html_body) for the daily digest email."""
+
     today = datetime.utcnow().strftime("%A, %B %d, %Y")
+
     color_pnl = "#16a34a" if day_pnl >= 0 else "#dc2626"
     color_total = "#16a34a" if total_return_pct >= 0 else "#dc2626"
     pnl_sign = "+" if day_pnl >= 0 else ""
 
+    # ---- Trades Table ----
     trades_rows = ""
     if trades_today:
         for t in trades_today:
-            side_color = "#16a34a" if t["side"] == "buy" else "#dc2626"
+            side = str(t.get("side", "")).lower()
+            side_color = "#16a34a" if side == "buy" else "#dc2626"
+
             trades_rows += f"""
             <tr>
-              <td style="padding:8px 12px;border-bottom:1px solid #eee;">{t['ticker']}</td>
-              <td style="padding:8px 12px;border-bottom:1px solid #eee;color:{side_color};font-weight:600;text-transform:uppercase;">{t['side']}</td>
-              <td style="padding:8px 12px;border-bottom:1px solid #eee;text-align:right;">{t['shares']:.4f}</td>
-              <td style="padding:8px 12px;border-bottom:1px solid #eee;text-align:right;">${t['price']:.2f}</td>
+              <td style="padding:8px 12px;border-bottom:1px solid #eee;">{t.get('ticker', '')}</td>
+              <td style="padding:8px 12px;border-bottom:1px solid #eee;color:{side_color};font-weight:600;text-transform:uppercase;">{side}</td>
+              <td style="padding:8px 12px;border-bottom:1px solid #eee;text-align:right;">{t.get('shares', 0):.4f}</td>
+              <td style="padding:8px 12px;border-bottom:1px solid #eee;text-align:right;">${t.get('price', 0):.2f}</td>
               <td style="padding:8px 12px;border-bottom:1px solid #eee;font-size:12px;color:#64748b;">{t.get('reason', '')}</td>
             </tr>"""
     else:
-        trades_rows = """<tr><td colspan="5" style="padding:16px;text-align:center;color:#64748b;">No trades today &mdash; strategy said hold.</td></tr>"""
+        trades_rows = """
+        <tr>
+          <td colspan="5" style="padding:16px;text-align:center;color:#64748b;">
+            No trades today &mdash; strategy said hold.
+          </td>
+        </tr>"""
 
+    # ---- Holdings Table ----
     holdings_rows = ""
     if positions:
         for p in positions:
-            pnl_color = "#16a34a" if p["unrealized_pnl"] >= 0 else "#dc2626"
+            pnl = p.get("unrealized_pnl", 0)
+            pnl_color = "#16a34a" if pnl >= 0 else "#dc2626"
+
             holdings_rows += f"""
             <tr>
-              <td style="padding:8px 12px;border-bottom:1px solid #eee;">{p['ticker']}</td>
-              <td style="padding:8px 12px;border-bottom:1px solid #eee;text-align:right;">{p['shares']:.4f}</td>
-              <td style="padding:8px 12px;border-bottom:1px solid #eee;text-align:right;">${p['current_price']:.2f}</td>
-              <td style="padding:8px 12px;border-bottom:1px solid #eee;text-align:right;">${p['market_value']:,.2f}</td>
-              <td style="padding:8px 12px;border-bottom:1px solid #eee;text-align:right;color:{pnl_color};">{p['unrealized_pnl_pct']:+.2f}%</td>
+              <td style="padding:8px 12px;border-bottom:1px solid #eee;">{p.get('ticker', '')}</td>
+              <td style="padding:8px 12px;border-bottom:1px solid #eee;text-align:right;">{p.get('shares', 0):.4f}</td>
+              <td style="padding:8px 12px;border-bottom:1px solid #eee;text-align:right;">${p.get('current_price', 0):.2f}</td>
+              <td style="padding:8px 12px;border-bottom:1px solid #eee;text-align:right;">${p.get('market_value', 0):,.2f}</td>
+              <td style="padding:8px 12px;border-bottom:1px solid #eee;text-align:right;color:{pnl_color};">
+                {p.get('unrealized_pnl_pct', 0):+.2f}%
+              </td>
             </tr>"""
     else:
-        holdings_rows = """<tr><td colspan="5" style="padding:16px;text-align:center;color:#64748b;">All in cash.</td></tr>"""
+        holdings_rows = """
+        <tr>
+          <td colspan="5" style="padding:16px;text-align:center;color:#64748b;">
+            All in cash.
+          </td>
+        </tr>"""
 
-    subject = f"\U0001F4C8 {portfolio['name']}: ${total_value:,.2f} ({pnl_sign}{day_pnl_pct:.2f}% today)"
+    portfolio_name = portfolio.get("name", "Portfolio")
+
+    subject = f"📈 {portfolio_name}: ${total_value:,.2f} ({pnl_sign}{day_pnl_pct:.2f}% today)"
 
     html = f"""
 <html>
 <body style="font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif;background:#f8fafc;margin:0;padding:24px;">
   <div style="max-width:640px;margin:0 auto;background:white;border-radius:12px;overflow:hidden;box-shadow:0 2px 8px rgba(0,0,0,0.04);">
+    
     <div style="background:linear-gradient(135deg,#0f172a,#1e293b);padding:32px 28px;color:white;">
-      <div style="font-size:11px;letter-spacing:2px;text-transform:uppercase;opacity:0.6;">Digital Twin Investor &middot; {today}</div>
-      <h1 style="margin:8px 0 4px 0;font-size:28px;">{portfolio['name']}</h1>
+      <div style="font-size:11px;letter-spacing:2px;text-transform:uppercase;opacity:0.6;">
+        Digital Twin Investor · {today}
+      </div>
+      <h1 style="margin:8px 0 4px 0;font-size:28px;">{portfolio_name}</h1>
       <div style="font-size:14px;opacity:0.8;">Strategy: {strategy_display}</div>
     </div>
+
     <div style="padding:28px;">
+      
       <div style="display:flex;gap:16px;flex-wrap:wrap;margin-bottom:24px;">
         <div style="flex:1;min-width:140px;">
-          <div style="font-size:11px;color:#64748b;text-transform:uppercase;letter-spacing:1px;">Portfolio Value</div>
-          <div style="font-size:28px;font-weight:700;color:#0f172a;">${total_value:,.2f}</div>
+          <div style="font-size:11px;color:#64748b;text-transform:uppercase;">Portfolio Value</div>
+          <div style="font-size:28px;font-weight:700;">${total_value:,.2f}</div>
         </div>
+
         <div style="flex:1;min-width:140px;">
-          <div style="font-size:11px;color:#64748b;text-transform:uppercase;letter-spacing:1px;">Today</div>
-          <div style="font-size:22px;font-weight:700;color:{color_pnl};">{pnl_sign}${day_pnl:,.2f}</div>
-          <div style="font-size:13px;color:{color_pnl};">{pnl_sign}{day_pnl_pct:.2f}%</div>
+          <div style="font-size:11px;color:#64748b;text-transform:uppercase;">Today</div>
+          <div style="font-size:22px;font-weight:700;color:{color_pnl};">
+            {pnl_sign}${day_pnl:,.2f}
+          </div>
+          <div style="font-size:13px;color:{color_pnl};">
+            {pnl_sign}{day_pnl_pct:.2f}%
+          </div>
         </div>
+
         <div style="flex:1;min-width:140px;">
-          <div style="font-size:11px;color:#64748b;text-transform:uppercase;letter-spacing:1px;">Total Return</div>
-          <div style="font-size:22px;font-weight:700;color:{color_total};">{total_return_pct:+.2f}%</div>
+          <div style="font-size:11px;color:#64748b;text-transform:uppercase;">Total Return</div>
+          <div style="font-size:22px;font-weight:700;color:{color_total};">
+            {total_return_pct:+.2f}%
+          </div>
           <div style="font-size:13px;color:#64748b;">since inception</div>
         </div>
       </div>
 
-      <h3 style="font-size:13px;color:#64748b;text-transform:uppercase;letter-spacing:1.5px;margin-bottom:8px;">Trades Today</h3>
+      <h3 style="font-size:13px;color:#64748b;text-transform:uppercase;">Trades Today</h3>
       <table style="width:100%;border-collapse:collapse;font-size:14px;margin-bottom:28px;">
-        <thead>
-          <tr style="background:#f8fafc;">
-            <th style="text-align:left;padding:10px 12px;font-size:11px;color:#64748b;text-transform:uppercase;letter-spacing:1px;">Ticker</th>
-            <th style="text-align:left;padding:10px 12px;font-size:11px;color:#64748b;text-transform:uppercase;letter-spacing:1px;">Side</th>
-            <th style="text-align:right;padding:10px 12px;font-size:11px;color:#64748b;text-transform:uppercase;letter-spacing:1px;">Shares</th>
-            <th style="text-align:right;padding:10px 12px;font-size:11px;color:#64748b;text-transform:uppercase;letter-spacing:1px;">Price</th>
-            <th style="text-align:left;padding:10px 12px;font-size:11px;color:#64748b;text-transform:uppercase;letter-spacing:1px;">Reason</th>
-          </tr>
-        </thead>
         <tbody>{trades_rows}</tbody>
       </table>
 
-      <h3 style="font-size:13px;color:#64748b;text-transform:uppercase;letter-spacing:1.5px;margin-bottom:8px;">Current Holdings</h3>
+      <h3 style="font-size:13px;color:#64748b;text-transform:uppercase;">Current Holdings</h3>
       <table style="width:100%;border-collapse:collapse;font-size:14px;">
-        <thead>
-          <tr style="background:#f8fafc;">
-            <th style="text-align:left;padding:10px 12px;font-size:11px;color:#64748b;text-transform:uppercase;letter-spacing:1px;">Ticker</th>
-            <th style="text-align:right;padding:10px 12px;font-size:11px;color:#64748b;text-transform:uppercase;letter-spacing:1px;">Shares</th>
-            <th style="text-align:right;padding:10px 12px;font-size:11px;color:#64748b;text-transform:uppercase;letter-spacing:1px;">Price</th>
-            <th style="text-align:right;padding:10px 12px;font-size:11px;color:#64748b;text-transform:uppercase;letter-spacing:1px;">Value</th>
-            <th style="text-align:right;padding:10px 12px;font-size:11px;color:#64748b;text-transform:uppercase;letter-spacing:1px;">P&L %</th>
-          </tr>
-        </thead>
         <tbody>{holdings_rows}</tbody>
       </table>
 
       <div style="margin-top:28px;padding-top:20px;border-top:1px solid #eee;font-size:12px;color:#94a3b8;text-align:center;">
         This is a paper-trading simulation. Not financial advice.
       </div>
+
     </div>
   </div>
 </body>
 </html>
 """
+
     return subject, html
